@@ -1,7 +1,7 @@
 {
   "name": "lodash",
   "version": "2.5.0-pre",
-  "main": "dist/lodash.compat.js",
+  "main": "dist/lodash.js",
   "ignore": [
     ".*",
     "*.custom.*",
