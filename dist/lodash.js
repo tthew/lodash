@@ -104,10 +104,11 @@
 
   /** Used to assign default `context` object properties */
   var contextProps = [
-    'Array', 'ArrayBuffer', 'Boolean', 'Date', 'Float64Array', 'Function',
-    'Math', 'Number', 'Object', 'RegExp', 'Set', 'String', '_', 'clearTimeout',
-    'document', 'isFinite', 'isNaN','parseInt', 'setTimeout', 'TypeError',
-    'Uint8Array', 'window', 'WinRTError'
+    'Array', 'ArrayBuffer', 'Boolean', 'Date', 'Float32Array', 'Float64Array',
+    'Function', 'Int8Array', 'Int16Array', 'Int32Array', 'Math', 'Number', 'Object',
+    'RegExp', 'Set', 'String', '_', 'clearTimeout', 'document', 'isFinite', 'isNaN',
+    'parseInt', 'setTimeout', 'TypeError', 'Uint8Array', 'Uint8ClampedArray',
+    'Uint16Array', 'Uint32Array', 'window', 'WinRTError'
   ];
 
   /** Used to make template sourceURLs easier to identify */
@@ -633,7 +634,7 @@
 
     /** Native method shortcuts */
     var ArrayBuffer = isNative(ArrayBuffer = context.ArrayBuffer) && ArrayBuffer,
-        bufferSlice = isNative(bufferSlice = ArrayBuffer && (new ArrayBuffer).slice) && bufferSlice,
+        bufferSlice = isNative(bufferSlice = ArrayBuffer && new ArrayBuffer(0).slice) && bufferSlice,
         ceil = Math.ceil,
         clearTimeout = context.clearTimeout,
         Float64Array = isNative(Float64Array = context.Float64Array) && Float64Array,
@@ -1082,7 +1083,7 @@
           case float32Class: case float64Class:
           case int8Class: case int16Class: case int32Class:
           case uint8Class: case uint8ClampedClass: case uint16Class: case uint32Class:
-            return value.subarray(0);
+            return new Ctor(cloneBuffer(value.buffer));
 
           case numberClass:
           case stringClass:
@@ -1108,13 +1109,16 @@
             return stackB[length];
           }
         }
-        result = isArr ? Ctor(value.length) : Ctor();
+        result = isArr ? Ctor(value.length) : new Ctor;
       }
       else {
         result = isArr ? slice(value) : baseAssign({}, value);
       }
+      if (className == argsClass) {
+        result.length = value.length;
+      }
       // add array properties assigned by `RegExp#exec`
-      if (isArr) {
+      else if (isArr) {
         if (hasOwnProperty.call(value, 'index')) {
           result.index = value.index;
         }
@@ -1182,8 +1186,7 @@
       if (typeof func != 'function') {
         return identity;
       }
-      // exit early for no `thisArg` or already bound by `Function#bind`
-      if (typeof thisArg == 'undefined' || !('prototype' in func)) {
+      if (typeof thisArg == 'undefined') {
         return func;
       }
       var data = func[expando];
@@ -1199,7 +1202,7 @@
           }
           if (!data) {
             // checks if `func` references the `this` keyword and stores the result
-            data = reThis.test(source);
+            data = reThis.test(source) || isNative(func);
             setData(func, data);
           }
         }
@@ -1598,8 +1601,8 @@
         return false;
       }
       var valClass = toString.call(value),
-          othClass = toString.call(other),
           valIsArg = valClass == argsClass,
+          othClass = toString.call(other),
           othIsArg = othClass == argsClass;
 
       if (valIsArg) {
@@ -1678,7 +1681,7 @@
           return stackB[length] == other;
         }
       }
-      result = true;
+      var index = -1;
 
       // add `value` and `other` to the stack of traversed objects
       stackA.push(value);
@@ -1686,32 +1689,60 @@
 
       // recursively compare objects and arrays (susceptible to call stack limits)
       if (isArr) {
-        // compare lengths to determine if a deep comparison is necessary
         var othLength = other.length;
         length = value.length;
-        result = othLength == length;
+        result = length == othLength;
 
         if (result || isWhere) {
-          var othIndex = -1;
-
           // deep compare the contents, ignoring non-numeric properties
-          while (++othIndex < othLength) {
-            var othValue = other[othIndex];
-
+          while (++index < length) {
+            var valValue = value[index];
             if (isWhere) {
-              var index = -1;
-              while (++index < length) {
-                result = baseIsEqual(value[index], othValue, callback, isWhere, stackA, stackB);
+              var othIndex = -1;
+              while (++othIndex < othLength) {
+                var othValue = other[othIndex];
+                result = baseIsEqual(valValue, othValue, callback, isWhere, stackA, stackB);
                 if (result) {
                   break;
                 }
               }
             } else {
-              var valValue = value[othIndex];
-              result = callback ? callback(valValue, othValue, othIndex) : undefined;
-              result = typeof result == 'undefined'
-                ? baseIsEqual(valValue, othValue, callback, isWhere, stackA, stackB)
-                : !!result;
+              othValue = other[index];
+              result = callback ? callback(valValue, othValue, index) : undefined;
+              if (typeof result == 'undefined') {
+                result = baseIsEqual(valValue, othValue, callback, isWhere, stackA, stackB);
+              }
+              if (!result) {
+                break;
+              }
+            }
+          }
+        }
+      }
+      else {
+        var valProps = keys(value),
+            othProps = keys(other);
+
+        if (valIsArg) {
+          valProps.push('length');
+        }
+        if (othIsArg) {
+          othProps.push('length');
+        }
+        length = valProps.length;
+        result = length == othProps.length;
+
+        if (result || isWhere) {
+          while (++index < length) {
+            var key = valProps[index];
+            result = hasOwnProperty.call(other, key);
+            if (result) {
+              othValue = other[key];
+              valValue = value[key];
+              result = callback ? callback(valValue, othValue, key) : undefined;
+              if (typeof result == 'undefined') {
+                result = baseIsEqual(valValue, othValue, callback, isWhere, stackA, stackB);
+              }
             }
             if (!result) {
               break;
@@ -1719,43 +1750,10 @@
           }
         }
       }
-      else {
-        var size = 0;
-
-        // deep compare objects using `forIn`, instead of `forOwn`, to avoid `Object.keys`
-        // which, in this case, is more costly
-        baseForIn(other, function(othValue, key, other) {
-          if (hasOwnProperty.call(other, key)) {
-            result = false;
-            // count the number of properties
-            size++;
-            // deep compare each property value
-            if (hasOwnProperty.call(value, key)) {
-              var valValue = value[key];
-              result = callback ? callback(valValue, othValue, key) : undefined;
-              result = typeof result == 'undefined'
-                ? baseIsEqual(valValue, othValue, callback, isWhere, stackA, stackB)
-                : !!result;
-            }
-            return result;
-          }
-        });
-
-        if (result && !isWhere) {
-          // ensure both objects have the same number of properties
-          baseForIn(value, function(valValue, key, value) {
-            if (hasOwnProperty.call(value, key)) {
-              // `size` will be `-1` if `value` has more properties than `other`
-              result = --size > -1;
-              return result;
-            }
-          });
-        }
-      }
       stackA.pop();
       stackB.pop();
 
-      return result;
+      return !!result;
     }
 
     /**
@@ -4890,8 +4888,8 @@
      * @category Collections
      * @param {Array|Object|string} collection The collection to iterate over.
      * @param {Array|Function|Object|string} [callback=identity] The function
-     *  called per iteration. If a property name or object is provided it is
-     *  used to create a "_.pluck" or "_.where" style callback respectively.
+     *  called per iteration. If property name(s) or an object is provided it
+     *  is used to create a "_.pluck" or "_.where" style callback respectively.
      * @param {*} [thisArg] The `this` binding of `callback`.
      * @returns {Array} Returns the new sorted array.
      * @example
@@ -7894,7 +7892,7 @@
       var type = typeof func,
           isFunc = type == 'function';
 
-      if (isFunc && (typeof thisArg == 'undefined' || !('prototype' in func))) {
+      if (isFunc && typeof thisArg == 'undefined') {
         return func;
       }
       if (isFunc || func == null) {
@@ -7973,7 +7971,7 @@
         while (length--) {
           var key = props[length];
           if (!(hasOwnProperty.call(object, key) &&
-                baseIsEqual(object[key], source[key], null, true))) {
+                baseIsEqual(source[key], object[key], null, true))) {
             return false;
           }
         }
@@ -8658,9 +8656,9 @@
 
   // some AMD build optimizers like r.js check for condition patterns like the following:
   if (typeof define == 'function' && typeof define.amd == 'object' && define.amd) {
-    // Expose Lo-Dash to the global object even when an AMD loader is present in
-    // case Lo-Dash is loaded with a RequireJS shim config.
-    // See http://requirejs.org/docs/api.html#config-shim
+    // Expose Lo-Dash to the global object when an AMD loader is present to avoid
+    // errors in cases where Lo-Dash is loaded by a script tag and not intended
+    // as an AMD module. See http://requirejs.org/docs/errors.html#mismatch
     root._ = _;
 
     // define as an anonymous module so, through path mapping, it can be
